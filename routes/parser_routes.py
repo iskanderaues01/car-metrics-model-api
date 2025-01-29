@@ -93,3 +93,44 @@ def parse_json(car_brand: str, car_model: str, date_max: str, count_pages: int):
 
     # Просто возвращаем список словарей => FastAPI сам сериализует в JSON
     return car_data
+
+@router.get("/parse-json-date")
+def parse_json_with_date(
+    car_brand: str,
+    car_model: str,
+    date_start: str,
+    date_max: str,
+    count_pages: int
+):
+    """
+    Пример:
+      GET /parse-json-date?car_brand=toyota&car_model=camry&date_start=2010&date_max=2015&count_pages=2
+
+    Парсит страницы по ссылке:
+      https://kolesa.kz/cars/{car_brand}/{car_model}/?year[from]={date_start}&year[to]={date_max}
+      с учётом пагинации (count_pages).
+
+    Сохраняет результат в JSON-файл, а также возвращает его как список объектов.
+    """
+    # Формируем URL
+    base_url = (
+        f"https://kolesa.kz/cars/{car_brand}/{car_model}/?"
+        f"year[from]={date_start}&year[to]={date_max}"
+    )
+
+    # Парсим count_pages страниц
+    car_data = scrape_multiple_pages(base_url, count_pages)
+    if not car_data:
+        return {"message": "No data found."}
+
+    # 1) Сохраняем JSON локально
+    dir_path = get_parsed_data_path()  # /home/chaplin/Desktop/parsed_data (пример)
+    filename = f"{car_brand}_{car_model}_{date_start}_{date_max}_{count_pages}.json"
+    file_path = os.path.join(dir_path, filename)
+
+    with open(file_path, 'w', encoding='utf-8') as f:
+        # ensure_ascii=False, чтобы кириллица и пр. символы были читабельны в файле
+        json.dump(car_data, f, ensure_ascii=False, indent=2)
+
+    # 2) Возвращаем список объявлений (JSON) в ответе
+    return car_data
