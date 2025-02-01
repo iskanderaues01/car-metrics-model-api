@@ -16,3 +16,4 @@ def get_parsed_data_path() -> str:
     parsed_dir = "/home/chaplin/Desktop/parsed_data"
     os.makedirs(parsed_dir, exist_ok=True)
     return parsed_dir
+
