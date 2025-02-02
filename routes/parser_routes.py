@@ -146,7 +146,7 @@ def parse_json_with_filter(
 ):
     """
     Пример запроса:
-      GET /parse-json-date?car_brand=toyota&car_model=camry&date_start=2010&date_max=2015&count_pages=2
+      GET /parse-json-filter?car_brand=toyota&car_model=camry&date_start=2010&date_max=2015&count_pages=2
 
     Формирует URL вида:
       https://kolesa.kz/cars/{car_brand}/{car_model}/?year[from]={date_start}&year[to]={date_max}
@@ -173,3 +173,4 @@ def parse_json_with_filter(
 
     # Возвращаем список объявлений
     return car_data
+

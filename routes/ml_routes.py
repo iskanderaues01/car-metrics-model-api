@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter
 import os
 import numpy as np
@@ -13,119 +15,641 @@ from services.paths_service import get_parsed_data_path, get_ml_results_path
 
 router = APIRouter()
 
-@router.get("/run-ml")
-def run_ml(car_brand: str, car_model: str, date_max: str, count_pages: int):
+@router.get("/analysis-linear_by_year")
+def analysis_linear_by_year(filename: str):
     """
-    Линейная регрессия
-    http://127.0.0.1:8000/run-ml?car_brand=toyota&car_model=camry&date_max=2015&count_pages=5
+    Принимает:
+      - filename: название JSON-файла, например "toyota_camry_2014_2015_3.json"
+
+    1) Открывает JSON-файл в папке parsed_data
+    2) Считывает первый объект, из поля "Title" извлекает марку (car_brand) и модель (car_model)
+    3) Приводит Price, Year к числам
+    4) Выполняет линейную регрессию (Price ~ Year)
+    5) Формирует график с заголовком "Цена в зависимости от года выпуска\n{car_brand} {car_model}"
+    6) Сохраняет PNG
+    7) Возвращает метрики и путь к графику
     """
-    csv_dir = get_parsed_data_path()
-    csv_filename = f"{car_brand}_{car_model}_{date_max}_{count_pages}.csv"
-    csv_path = os.path.join(csv_dir, csv_filename)
 
-    if not os.path.exists(csv_path):
-        return {"error": f"CSV file not found: {csv_path}. Сначала выполните /save_local."}
+    # 1) Путь к файлу
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
 
-    df = pd.read_csv(csv_path)
-    df['Price'] = df['Price'].replace(r'\D+', '', regex=True).astype(float)
-    df['Year'] = df['Year'].astype(float)
-    # Удалим некорректные данные
-    df = df[(df['Price'] > 0) & (df['Year'] > 1900)]
+    if not os.path.exists(file_path):
+        return {"error": f"Файл не найден: {file_path}"}
 
-    X = df[['Year']]
-    y = df['Price']
+    # 2) Читаем JSON
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not data:
+        return {"error": "Файл JSON пустой или некорректный."}
+
+    # Извлекаем марку и модель из первого объекта
+    # Предположим, что поле "Title" содержит что-то вроде "Toyota Camry"
+    first_title = data[0].get("Title", "").strip()
+    if not first_title:
+        return {"error": "Не удалось определить марку и модель из Title первого объекта."}
+
+    # Разделим строку "Toyota Camry" на ["Toyota", "Camry"]
+    parts = first_title.split(maxsplit=1)
+    car_brand = parts[0] if len(parts) >= 1 else "UnknownBrand"
+    car_model = parts[1] if len(parts) >= 2 else "UnknownModel"
+
+    # 3) Приводим к DataFrame и фильтруем
+    df = pd.DataFrame(data)
+
+    # Price -> float (убираем нецифровые символы)
+    df["Price"] = df["Price"].replace(r"\D+", "", regex=True).astype(float)
+
+    # Year -> число
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+
+    # Фильтруем
+    df.dropna(subset=["Year", "Price"], inplace=True)
+    df = df[(df["Price"] > 0) & (df["Year"] > 1900)]
+
+    if df.empty:
+        return {"error": "После фильтрации не осталось записей для анализа."}
+
+    # 4) Линейная регрессия: Price ~ Year
+    X = df[["Year"]]
+    y = df["Price"]
 
     model = LinearRegression()
     model.fit(X, y)
 
-    X_sorted = np.sort(X['Year'].unique())
-    X_sorted_2d = X_sorted.reshape(-1, 1)
-    y_pred = model.predict(X_sorted_2d)
+    y_pred = model.predict(X)
+    mse = mean_squared_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
 
+    slope = model.coef_[0]
+    intercept = model.intercept_
+
+    # 5) График
     plt.figure(figsize=(8, 6))
-    plt.scatter(X, y, label="Данные", alpha=0.5)
-    plt.plot(X_sorted, y_pred, color='red', label="Линейная регрессия")
-    plt.xlabel("Год")
+    plt.scatter(df["Year"], df["Price"], alpha=0.5, label="Данные")
+
+    x_sorted = np.sort(df["Year"].unique())
+    y_sorted = model.predict(x_sorted.reshape(-1, 1))
+    plt.plot(x_sorted, y_sorted, color="red", label="Линейная регрессия")
+
+    plt.xlabel("Год выпуска")
     plt.ylabel("Цена")
-    plt.title(f"Linear Regression: {car_brand} {car_model}, год <= {date_max}")
+    plt.title(f"Цена в зависимости от года выпуска\n{car_brand} {car_model}")
     plt.legend()
 
+    # 6) Сохраняем график
     ml_dir = get_ml_results_path()
-    plot_filename = f"{car_brand}_{car_model}_{date_max}_{count_pages}.png"
+    base_name, _ = os.path.splitext(filename)
+    plot_filename = f"{base_name}_analysis_linear_year.png"
     plot_path = os.path.join(ml_dir, plot_filename)
     plt.savefig(plot_path)
     plt.close()
 
+    # 7) Возврат метрик и пути
     return {
-        "message": "Linear Regression обучение завершено",
-        "png_path": plot_path
-    }
-
-
-@router.get("/run-ml2")
-def run_ml2(car_brand: str, car_model: str, date_max: str, count_pages: int):
-    """
-    Более точный подход — Gradient Boosting Regressor
-    http://127.0.0.1:8000/run-ml2?car_brand=toyota&car_model=camry&date_max=2015&count_pages=5
-    """
-    csv_dir = get_parsed_data_path()
-    csv_filename = f"{car_brand}_{car_model}_{date_max}_{count_pages}.csv"
-    csv_path = os.path.join(csv_dir, csv_filename)
-
-    if not os.path.exists(csv_path):
-        return {"error": f"CSV file not found: {csv_path}. Сначала выполните /save_local."}
-
-    df = pd.read_csv(csv_path)
-    df['Price'] = df['Price'].replace(r'\D+', '', regex=True).astype(float)
-    df['Year'] = df['Year'].astype(float)
-    df = df[(df['Price'] > 0) & (df['Year'] > 1900)]
-
-    X = df[['Year']]
-    y = df['Price']
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-    model = GradientBoostingRegressor(
-        n_estimators=100,
-        learning_rate=0.1,
-        max_depth=3,
-        random_state=42
-    )
-    model.fit(X_train, y_train)
-
-    y_pred = model.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
-
-    years_range = np.arange(int(df['Year'].min()), int(df['Year'].max()) + 1)
-    years_range_2d = years_range.reshape(-1, 1)
-    y_range_pred = model.predict(years_range_2d)
-
-    plt.figure(figsize=(8, 6))
-    # TRAIN
-    plt.scatter(X_train, y_train, color='blue', alpha=0.5, label="Train")
-    # TEST
-    plt.scatter(X_test, y_test, color='green', alpha=0.5, label="Test")
-
-    # Линия предсказаний
-    plt.plot(years_range, y_range_pred, color='red', label="GB Predictions")
-
-    plt.xlabel("Год")
-    plt.ylabel("Цена")
-    plt.title(f"Gradient Boosting: {car_brand} {car_model}, год <= {date_max}")
-    plt.legend()
-
-    ml_dir = get_ml_results_path()
-    plot_filename = f"improved_{car_brand}_{car_model}_{date_max}_{count_pages}.png"
-    plot_path = os.path.join(ml_dir, plot_filename)
-    plt.savefig(plot_path)
-    plt.close()
-
-    return {
-        "message": "Gradient Boosting обучение завершено",
+        "message": "Анализ завершён (Linear Regression): Цена ~ Год.",
+        "FileAnalyzed": file_path,
+        "CountRecords": len(df),
         "MSE": mse,
         "R^2": r2,
-        "png_path": plot_path
+        "Equation": f"Price = {slope:.2f} * Year + {intercept:.2f}",
+        "PlotPath": plot_path,
+        "CarBrand": car_brand,
+        "CarModel": car_model
     }
+
+@router.get("/analysis-linear-by-mileage")
+def analysis_linear_by_mileage(filename: str):
+    """
+    Пример запроса:
+      GET /analysis-linear-by-mileage?filename=toyota_camry_2014_2015_3.json
+
+    1) Ищет JSON-файл (filename) в директории parsed_data.
+    2) Извлекает из первого объекта поля "Title" => car_brand, car_model (разделяем строку).
+    3) Превращает список объявлений в DataFrame, приводит 'Price' и 'Mileage' к float.
+    4) Фильтрует некорректные записи (Price <= 0, Mileage <= 0, пустые).
+    5) Строит линейную регрессию: Price ~ Mileage.
+    6) Рисует график "Цена в зависимости от пробега\n{car_brand} {car_model}".
+    7) Сохраняет под именем "{base_name}_analysis_linear_mileage.png" в ml_results.
+    8) Возвращает метрики, путь к изображению и пр.
+    """
+
+    # Шаг 1: Путь к JSON-файлу
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
+    if not os.path.exists(file_path):
+        return {"error": f"Файл не найден: {file_path}"}
+
+    # Шаг 2: Считываем JSON
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not data:
+        return {"error": "Файл JSON пуст или некорректен."}
+
+    # Извлекаем бренд и модель из первого объекта (поле "Title")
+    first_title = data[0].get("Title", "").strip()
+    if not first_title:
+        return {"error": "Не удалось определить марку и модель из Title первого объекта."}
+
+    parts = first_title.split(maxsplit=1)
+    car_brand = parts[0] if len(parts) >= 1 else "UnknownBrand"
+    car_model = parts[1] if len(parts) >= 2 else "UnknownModel"
+
+    # Шаг 3: Превращаем в DataFrame
+    df = pd.DataFrame(data)
+
+    # Приводим Price к float
+    df["Price"] = df["Price"].replace(r"\D+", "", regex=True).astype(float)
+
+    # Приводим Mileage к float (в JSON она уже строка, но там должны быть цифры)
+    df["Mileage"] = pd.to_numeric(df["Mileage"], errors="coerce")
+
+    # Шаг 4: Фильтр (убираем NaN, нули, отрицательные)
+    df.dropna(subset=["Mileage", "Price"], inplace=True)
+    df = df[(df["Price"] > 0) & (df["Mileage"] > 0)]
+
+    if df.empty:
+        return {"error": "После фильтрации не осталось записей для анализа (Price/Mileage невалидны)."}
+
+    # Шаг 5: Линейная регрессия Price ~ Mileage
+    X = df[["Mileage"]]
+    y = df["Price"]
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    y_pred = model.predict(X)
+    mse = mean_squared_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
+
+    slope = model.coef_[0]
+    intercept = model.intercept_
+
+    # Шаг 6: Рисуем график
+    plt.figure(figsize=(8, 6))
+    plt.scatter(df["Mileage"], df["Price"], alpha=0.5, label="Данные")
+
+    # Чтобы построить "линию", сортируем значения пробега
+    x_sorted = np.sort(df["Mileage"].unique())
+    y_sorted = model.predict(x_sorted.reshape(-1, 1))
+    plt.plot(x_sorted, y_sorted, color="red", label="Линейная регрессия")
+
+    plt.xlabel("Пробег (км)")
+    plt.ylabel("Цена")
+    plt.title(f"Цена в зависимости от пробега\n{car_brand} {car_model}")
+    plt.legend()
+
+    # Шаг 7: Сохраняем
+    ml_dir = get_ml_results_path()
+    base_name, _ = os.path.splitext(filename)
+    plot_filename = f"{base_name}_analysis_linear_mileage.png"
+    plot_path = os.path.join(ml_dir, plot_filename)
+    plt.savefig(plot_path)
+    plt.close()
+
+    # Шаг 8: Возвращаем результаты
+    return {
+        "message": "Линейная регрессия: Цена ~ Пробег. Анализ завершён.",
+        "FileAnalyzed": file_path,
+        "CountRecords": len(df),
+        "MSE": mse,
+        "R^2": r2,
+        "Equation": f"Price = {slope:.2f} * Mileage + {intercept:.2f}",
+        "PlotPath": plot_path,
+        "CarBrand": car_brand,
+        "CarModel": car_model
+    }
+
+@router.get("/analysis-linear-by-engine-volume")
+def analysis_linear_by_engine_volume(filename: str):
+    """
+    Пример запроса:
+      GET /analysis-linear-by-engine-volume?filename=toyota_camry_2014_2015_3.json
+
+    1) Ищет JSON-файл (filename) в директории parsed_data.
+    2) Извлекает из первого объекта поля "Title" => car_brand, car_model.
+    3) Превращает список объявлений в DataFrame, приводит 'Price' и 'EngineVolume' к float.
+    4) Фильтрует некорректные записи (Price <= 0, EngineVolume <= 0).
+    5) Строит линейную регрессию: Price ~ EngineVolume.
+    6) Рисует график: "Цена в зависимости от объёма двигателя\n{car_brand} {car_model}".
+    7) Сохраняет изображение в ml_results под именем "{base_name}_analysis_linear_enginevolume.png".
+    8) Возвращает JSON с метриками (MSE, R^2), уравнением, путём к графику и т.д.
+    """
+
+    # 1) Путь к файлу
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
+    if not os.path.exists(file_path):
+        return {"error": f"Файл не найден: {file_path}"}
+
+    # 2) Считываем JSON
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not data:
+        return {"error": "Файл JSON пуст или некорректен."}
+
+    # Извлекаем бренд и модель из первого объекта (поле "Title")
+    first_title = data[0].get("Title", "").strip()
+    if not first_title:
+        return {"error": "Не удалось определить марку и модель из Title первого объекта."}
+
+    parts = first_title.split(maxsplit=1)
+    car_brand = parts[0] if len(parts) >= 1 else "UnknownBrand"
+    car_model = parts[1] if len(parts) >= 2 else "UnknownModel"
+
+    # 3) Превращаем в DataFrame
+    df = pd.DataFrame(data)
+
+    # Price -> float (убираем нецифровые символы)
+    df["Price"] = df["Price"].replace(r"\D+", "", regex=True).astype(float)
+
+    # EngineVolume -> float (например, "2.5" или "3" и т.д.)
+    df["EngineVolume"] = pd.to_numeric(df["EngineVolume"], errors="coerce")
+
+    # 4) Фильтр (убираем NaN, нули, отрицательные)
+    df.dropna(subset=["EngineVolume", "Price"], inplace=True)
+    df = df[(df["Price"] > 0) & (df["EngineVolume"] > 0)]
+
+    if df.empty:
+        return {"error": "После фильтрации не осталось записей для анализа (Price/EngineVolume невалидны)."}
+
+    # 5) Линейная регрессия Price ~ EngineVolume
+    X = df[["EngineVolume"]]
+    y = df["Price"]
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    y_pred = model.predict(X)
+    mse = mean_squared_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
+
+    slope = model.coef_[0]
+    intercept = model.intercept_
+
+    # 6) Рисуем график
+    plt.figure(figsize=(8, 6))
+    plt.scatter(df["EngineVolume"], df["Price"], alpha=0.5, label="Данные")
+
+    # Чтобы построить линию регрессии, отсортируем значения
+    x_sorted = np.sort(df["EngineVolume"].unique())
+    y_sorted = model.predict(x_sorted.reshape(-1, 1))
+    plt.plot(x_sorted, y_sorted, color="red", label="Линейная регрессия")
+
+    plt.xlabel("Объём двигателя (л)")
+    plt.ylabel("Цена")
+    plt.title(f"Цена в зависимости от объёма двигателя\n{car_brand} {car_model}")
+    plt.legend()
+
+    # 7) Сохраняем изображение
+    ml_dir = get_ml_results_path()
+    base_name, _ = os.path.splitext(filename)
+    plot_filename = f"{base_name}_analysis_linear_enginevolume.png"
+    plot_path = os.path.join(ml_dir, plot_filename)
+    plt.savefig(plot_path)
+    plt.close()
+
+    # 8) Возвращаем результаты
+    return {
+        "message": "Линейная регрессия: Цена ~ Объём двигателя. Анализ завершён.",
+        "FileAnalyzed": file_path,
+        "CountRecords": len(df),
+        "MSE": mse,
+        "R^2": r2,
+        "Equation": f"Price = {slope:.2f} * EngineVolume + {intercept:.2f}",
+        "PlotPath": plot_path,
+        "CarBrand": car_brand,
+        "CarModel": car_model
+    }
+
+
+@router.get("/analysis-multiple-linear")
+def analysis_multiple_linear(filename: str):
+    """
+    Множественная линейная регрессия: Цена ~ Год + Пробег + Объём двигателя.
+
+    Пример вызова:
+      GET /analysis-multiple-linear?filename=toyota_camry_2014_2015_3.json
+
+    1) Берём JSON-файл из parsed_data
+    2) Парсим поля Price, Year, Mileage, EngineVolume
+    3) Фильтруем неверные или пустые данные
+    4) Обучаем модель Price ~ Year + Mileage + EngineVolume
+    5) Рисуем три subplot частичных зависимостей на русском
+    6) Сохраняем результат и возвращаем JSON с метриками
+    """
+
+    # 1) Путь к файлу JSON
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
+    if not os.path.exists(file_path):
+        return {"error": f"Файл не найден: {file_path}"}
+
+    # 2) Читаем JSON
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not data:
+        return {"error": "Файл JSON пуст или некорректен."}
+
+    # Извлекаем марку и модель (для заголовка) из первого объекта
+    first_title = data[0].get("Title", "").strip() if data else ""
+    parts = first_title.split(maxsplit=1)
+    car_brand = parts[0] if len(parts) >= 1 else "UnknownBrand"
+    car_model = parts[1] if len(parts) >= 2 else "UnknownModel"
+
+    # 3) DataFrame + приведение типов
+    df = pd.DataFrame(data)
+
+    df["Price"] = df["Price"].replace(r"\D+", "", regex=True).astype(float)
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+    df["Mileage"] = pd.to_numeric(df["Mileage"], errors="coerce")
+    df["EngineVolume"] = pd.to_numeric(df["EngineVolume"], errors="coerce")
+
+    # 4) Фильтрация
+    df.dropna(subset=["Price", "Year", "Mileage", "EngineVolume"], inplace=True)
+    df = df[
+        (df["Price"] > 0) &
+        (df["Year"] > 1900) &
+        (df["Mileage"] > 0) &
+        (df["EngineVolume"] > 0)
+        ]
+    if df.empty:
+        return {"error": "После фильтрации не осталось валидных записей для анализа."}
+
+    # 5) Модель множественной линейной регрессии
+    X = df[["Year", "Mileage", "EngineVolume"]]
+    y = df["Price"]
+    model = LinearRegression()
+    model.fit(X, y)
+
+    # Предсказания
+    y_pred = model.predict(X)
+    mse = mean_squared_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
+
+    coef_year = model.coef_[0]
+    coef_mileage = model.coef_[1]
+    coef_engine_volume = model.coef_[2]
+    intercept = model.intercept_
+
+    # 6) Визуализация частичных зависимостей
+    mean_year = df["Year"].mean()
+    mean_mileage = df["Mileage"].mean()
+    mean_engine_volume = df["EngineVolume"].mean()
+
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+
+    # Заголовок на русском
+    fig.suptitle(
+        f"Множественная регрессия: Цена ~ Год + Пробег + Объём двигателя\n{car_brand} {car_model}",
+        fontsize=14
+    )
+
+    # --- (1) Цена ~ Год ---
+    x_min, x_max = int(df["Year"].min()), int(df["Year"].max())
+    x_range = np.arange(x_min, x_max + 1)
+    X_line = pd.DataFrame({
+        "Year": x_range,
+        "Mileage": mean_mileage,
+        "EngineVolume": mean_engine_volume
+    })
+    y_line = model.predict(X_line)
+
+    axs[0].scatter(df["Year"], df["Price"], alpha=0.5, label="Данные")
+    axs[0].plot(x_range, y_line, color="red", label="Лин. регрессия")
+    axs[0].set_xlabel("Год")
+    axs[0].set_ylabel("Цена")
+    axs[0].legend()
+    axs[0].set_title("При фикс.\nПробег, Объём двигателя")
+
+    # --- (2) Цена ~ Пробег ---
+    x_min2, x_max2 = int(df["Mileage"].min()), int(df["Mileage"].max())
+    x_range2 = np.linspace(x_min2, x_max2, 50)
+    X_line2 = pd.DataFrame({
+        "Year": mean_year,
+        "Mileage": x_range2,
+        "EngineVolume": mean_engine_volume
+    })
+    y_line2 = model.predict(X_line2)
+
+    axs[1].scatter(df["Mileage"], df["Price"], alpha=0.5, label="Данные")
+    axs[1].plot(x_range2, y_line2, color="red", label="Лин. регрессия")
+    axs[1].set_xlabel("Пробег")
+    axs[1].set_ylabel("Цена")
+    axs[1].legend()
+    axs[1].set_title("При фикс.\nГод, Объём двигателя")
+
+    # --- (3) Цена ~ Объём двигателя ---
+    x_min3, x_max3 = df["EngineVolume"].min(), df["EngineVolume"].max()
+    x_range3 = np.linspace(x_min3, x_max3, 50)
+    X_line3 = pd.DataFrame({
+        "Year": mean_year,
+        "Mileage": mean_mileage,
+        "EngineVolume": x_range3
+    })
+    y_line3 = model.predict(X_line3)
+
+    axs[2].scatter(df["EngineVolume"], df["Price"], alpha=0.5, label="Данные")
+    axs[2].plot(x_range3, y_line3, color="red", label="Лин. регрессия")
+    axs[2].set_xlabel("Объём двигателя")
+    axs[2].set_ylabel("Цена")
+    axs[2].legend()
+    axs[2].set_title("При фикс.\nГод, Пробег")
+
+    plt.tight_layout()
+
+    # 7) Сохраняем рисунок
+    ml_dir = get_ml_results_path()
+    base_name, _ = os.path.splitext(filename)
+    plot_filename = f"{base_name}_analysis_multiple_linear.png"
+    plot_path = os.path.join(ml_dir, plot_filename)
+    plt.savefig(plot_path)
+    plt.close()
+
+    # 8) Возвращаем результат
+    return {
+        "message": "Множественная регрессия: Цена ~ Год + Пробег + Объём двигателя. Анализ завершён.",
+        "FileAnalyzed": file_path,
+        "CarBrand": car_brand,
+        "CarModel": car_model,
+        "CountRecords": len(df),
+        "MSE": mse,
+        "R^2": r2,
+        "Equation": (
+            f"Price = {intercept:.2f} "
+            f"+ ({coef_year:.2f} * Год) "
+            f"+ ({coef_mileage:.2f} * Пробег) "
+            f"+ ({coef_engine_volume:.2f} * ОбъёмДвигателя)"
+        ),
+        "PlotPath": plot_path
+    }
+
+
+# routes/ml_routes.py
+
+from fastapi import APIRouter
+import os
+import json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+
+from services.paths_service import get_parsed_data_path, get_ml_results_path
+
+router = APIRouter()
+
+
+@router.get("/analysis-multiple-dummies")
+def analysis_multiple_dummies(filename: str):
+    """
+    Пример запроса:
+      GET /analysis-multiple-dummies?filename=toyota_camry_2014_2015_3.json
+
+    Выполняем множественную линейную регрессию с учётом категориальных признаков:
+    Цена ~ Год + Пробег + ОбъёмДвигателя + Топливо + Трансмиссия.
+    (Fuel и Transmission будут преобразованы в dummy-переменные).
+    """
+
+    print("[LOG] => analysis_multiple_dummies STARTED")
+    print(f"[LOG] => Received filename: {filename}")
+
+    # 1) Путь к JSON
+    parsed_dir = get_parsed_data_path()
+    print(f"[LOG] => Parsed data directory: {parsed_dir}")
+    file_path = os.path.join(parsed_dir, filename)
+    print(f"[LOG] => Full file path: {file_path}")
+
+    if not os.path.exists(file_path):
+        print(f"[LOG] => File not found: {file_path}")
+        return {"error": f"Файл не найден: {file_path}"}
+
+    # 2) Загружаем JSON
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"[LOG] => JSON loaded, total records: {len(data) if data else 0}")
+    except Exception as e:
+        print(f"[LOG] => Error reading JSON: {e}")
+        return {"error": f"Ошибка чтения JSON: {str(e)}"}
+
+    if not data:
+        print("[LOG] => JSON is empty or invalid.")
+        return {"error": "Файл JSON пуст или некорректен."}
+
+    # Извлекаем название (Brand, Model) из первого объявления
+    first_title = data[0].get("Title", "").strip()
+    parts = first_title.split(maxsplit=1)
+    car_brand = parts[0] if len(parts) >= 1 else "UnknownBrand"
+    car_model = parts[1] if len(parts) >= 2 else "UnknownModel"
+    print(f"[LOG] => Extracted Brand: {car_brand}, Model: {car_model}")
+
+    # 3) DataFrame
+    df = pd.DataFrame(data)
+    print(f"[LOG] => Created DataFrame, shape: {df.shape}")
+
+    # Приводим Price к float, Year, Mileage, EngineVolume к числу
+    print("[LOG] => Converting Price, Year, Mileage, EngineVolume to numeric...")
+    df["Price"] = df["Price"].replace(r"\D+", "", regex=True).astype(float)
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+    df["Mileage"] = pd.to_numeric(df["Mileage"], errors="coerce")
+    df["EngineVolume"] = pd.to_numeric(df["EngineVolume"], errors="coerce")
+
+    # 4) Фильтрация
+    print("[LOG] => Dropping NaN for required columns and filtering out invalid rows...")
+    df.dropna(subset=["Price", "Year", "Mileage", "EngineVolume", "Fuel", "Transmission"], inplace=True)
+    df = df[
+        (df["Price"] > 0) &
+        (df["Year"] > 1900) &
+        (df["Mileage"] > 0) &
+        (df["EngineVolume"] > 0)
+        ]
+    print(f"[LOG] => DataFrame after filtering, shape: {df.shape}")
+
+    if df.empty:
+        print("[LOG] => No valid records left after filtering.")
+        return {"error": "После фильтрации не осталось валидных записей."}
+
+    # 5) Формируем X, y для регрессии
+    print("[LOG] => Preparing numeric and categorical columns for regression.")
+    numeric_cols = ["Year", "Mileage", "EngineVolume"]
+    cat_cols = ["Fuel", "Transmission"]
+
+    # Для категориальных делаем dummy-переменные
+    print("[LOG] => Generating dummy variables (one-hot encoding)...")
+    df_dummies = pd.get_dummies(df[cat_cols], drop_first=True)
+    print(f"[LOG] => Dummy columns created: {list(df_dummies.columns)}")
+
+    # Объединяем числовые и дамми-колонки
+    X = pd.concat([df[numeric_cols], df_dummies], axis=1)
+    y = df["Price"]
+    print("[LOG] => Final feature set shape:", X.shape)
+
+    # 6) Обучение модели
+    print("[LOG] => Training LinearRegression model...")
+    model = LinearRegression()
+    model.fit(X, y)
+
+    # Предсказание
+    print("[LOG] => Making predictions...")
+    y_pred = model.predict(X)
+    mse = mean_squared_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
+
+    intercept = model.intercept_
+    coefs = model.coef_
+    feature_names = X.columns.tolist()
+
+    print(f"[LOG] => Model trained. MSE={mse:.2f}, R^2={r2:.2f}, intercept={intercept:.2f}")
+
+    # 7) Визуализация (упрощённая, на русском)
+    print("[LOG] => Building bar chart of coefficients...")
+    plt.figure(figsize=(8, 6))
+    plt.barh(feature_names, coefs, color="cadetblue")
+    plt.xlabel("Значение коэффициента")
+    plt.title(
+        f"Множественная регрессия (dummy-переменные)\n{car_brand} {car_model}\n"
+        "Цена ~ Год + Пробег + ОбъёмДвигателя + Топливо + Трансмиссия"
+    )
+    plt.tight_layout()
+
+    # 8) Сохраняем
+    ml_dir = get_ml_results_path()
+    print(f"[LOG] => ML results directory: {ml_dir}")
+    base_name, _ = os.path.splitext(filename)
+    plot_filename = f"{base_name}_analysis_multiple_dummies.png"
+    plot_path = os.path.join(ml_dir, plot_filename)
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"[LOG] => Plot saved to: {plot_path}")
+
+    # 9) Формируем строку уравнения (для наглядности)
+    eq_parts = [f"{intercept:.2f}"]
+    for feat, c in zip(feature_names, coefs):
+        eq_parts.append(f"({c:.2f} * {feat})")
+    eq_str = " + ".join(eq_parts)
+
+    print("[LOG] => analysis_multiple_dummies FINISHED - returning results.")
+
+    return {
+        "message": (
+            "Множественная линейная регрессия с категориальными переменными (dummy): "
+            "Цена ~ Год + Пробег + ОбъёмДвигателя + Топливо + Трансмиссия. Анализ завершён."
+        ),
+        "FileAnalyzed": file_path,
+        "CarBrand": car_brand,
+        "CarModel": car_model,
+        "CountRecords": len(df),
+        "MSE": mse,
+        "R^2": r2,
+        "Equation": f"Price = {eq_str}",
+        "PlotPath": plot_path,
+        "DummyFeatures": df_dummies.columns.tolist()
+    }
+
+
