@@ -489,21 +489,9 @@ def analysis_multiple_linear(filename: str):
 
 
 # routes/ml_routes.py
-
-from fastapi import APIRouter
 import os
 import json
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
-
 from services.paths_service import get_parsed_data_path, get_ml_results_path
-
-router = APIRouter()
-
 
 @router.get("/analysis-multiple-dummies")
 def analysis_multiple_dummies(filename: str):
