@@ -5,7 +5,7 @@ from io import StringIO
 import pandas as pd
 import os
 
-from services.parsing_service import scrape_multiple_pages2
+from services.parsing_service import scrape_multiple_pages2, parse_car_image_url
 from services.paths_service import get_parsed_data_path
 
 router = APIRouter()
@@ -146,18 +146,22 @@ def parse_json_with_filter(
 ):
     """
     Пример запроса:
-      GET /parse-json-filter?car_brand=toyota&car_model=camry&date_start=2010&date_max=2015&count_pages=2
+      GET /parse-json-filter?car_brand=toyota&car_model=land-cruiser-prado&date_start=2000&date_max=2025&count_pages=2
 
     Формирует URL вида:
-      https://kolesa.kz/cars/{car_brand}/{car_model}/?year[from]={date_start}&year[to]={date_max}
-    Парсит count_pages страниц, возвращает только объявления, у которых Mileage - число.
-    Сохраняет результат в JSON-файл, а также возвращает его как список объектов.
+      https://kolesa.kz/cars/{car_brand}/{car_model}/?year%5Bfrom%5D={date_start}&year%5Bto%5D={date_max}
+
+    Парсит count_pages страниц, возвращает только объявления,
+    сохраняет результат в JSON, также отдаёт список объектов в ответ.
     """
+
+    # Обратите внимание: в ссылке используем год в виде year%5Bfrom%5D и year%5Bto%5D
     base_url = (
         f"https://kolesa.kz/cars/{car_brand}/{car_model}/?"
-        f"year[from]={date_start}&year[to]={date_max}"
+        f"year%5Bfrom%5D={date_start}&year%5Bto%5D={date_max}"
     )
 
+    # Парсим count_pages
     car_data = scrape_multiple_pages2(base_url, count_pages)
     if not car_data:
         return {"message": "No data found."}
@@ -168,9 +172,36 @@ def parse_json_with_filter(
     file_path = os.path.join(dir_path, filename)
 
     with open(file_path, 'w', encoding='utf-8') as f:
-        # ensure_ascii=False для корректного сохранения кириллицы
         json.dump(car_data, f, ensure_ascii=False, indent=2)
 
     # Возвращаем список объявлений
     return car_data
 
+
+@router.get("/parse-image-car")
+def parse_image(url: str, photo_name: str):
+    """
+    Роутер, который вызывает сервис parse_main_image_url, чтобы получить ссылку на главное изображение.
+    Пример:
+      GET /parse-image?url=https://kolesa.kz/a/show/177738792&photo_name=kia_rio
+
+    Возвращаем:
+      {
+        "imageName": "kia_rio",
+        "imageUrl": "https://.../1-750x470.webp"
+      }
+    """
+
+    print(f"[LOG] => parse_image START, url={url}, photo_name={photo_name}")
+    try:
+        # Вызов сервиса
+        img_url = parse_car_image_url(url)
+
+        # Формируем ответ
+        return {
+            "imageName": photo_name,
+            "imageUrl": img_url
+        }
+    except Exception as e:
+        # Если сервис выбросил исключение, вернём ошибку в JSON
+        return {"error": str(e)}

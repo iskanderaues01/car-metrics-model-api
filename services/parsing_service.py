@@ -266,3 +266,31 @@ def scrape_multiple_pages2(base_url: str, num_pages: int) -> List[Dict[str, str]
             print(f"Error fetching page {page}: {e}")
         time.sleep(random.uniform(1, 3))
     return all_cars
+
+
+def parse_car_image_url(ad_url: str) -> str:
+    """
+    Получает ссылку на объявление (ad_url), парсит HTML и
+    пытается вернуть ссылку на главное изображение (src тега img в .gallery__main).
+
+    Если что-то пошло не так — выбрасывает исключение.
+    """
+    try:
+        response = requests.get(ad_url, timeout=10)
+        if response.status_code != 200:
+            raise Exception(f"Страница недоступна, статус {response.status_code}")
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        main_img_elem = soup.select_one(".gallery__main img")
+        if not main_img_elem:
+            raise Exception("Не найдено главное изображение (селектор .gallery__main img).")
+
+        img_url = main_img_elem.get("src")
+        if not img_url:
+            raise Exception("У тега img нет атрибута src.")
+
+        return img_url
+
+    except Exception as e:
+        # Пробрасываем исключение дальше, чтобы роутер мог отреагировать
+        raise e
