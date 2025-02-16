@@ -109,7 +109,7 @@ def analysis_linear_by_year(filename: str):
     # 7) Возврат метрик и пути
     return {
         "message": "Анализ завершён (Linear Regression): Цена ~ Год.",
-        "FileAnalyzed": file_path,
+        "FileAnalyzed": filename,
         "CountRecords": len(df),
         "MSE": mse,
         "R^2": r2,
@@ -212,7 +212,7 @@ def analysis_linear_by_mileage(filename: str):
     # Шаг 8: Возвращаем результаты
     return {
         "message": "Линейная регрессия: Цена ~ Пробег. Анализ завершён.",
-        "FileAnalyzed": file_path,
+        "FileAnalyzed": filename,
         "CountRecords": len(df),
         "MSE": mse,
         "R^2": r2,
@@ -315,7 +315,7 @@ def analysis_linear_by_engine_volume(filename: str):
     # 8) Возвращаем результаты
     return {
         "message": "Линейная регрессия: Цена ~ Объём двигателя. Анализ завершён.",
-        "FileAnalyzed": file_path,
+        "FileAnalyzed": filename,
         "CountRecords": len(df),
         "MSE": mse,
         "R^2": r2,
@@ -472,7 +472,7 @@ def analysis_multiple_linear(filename: str):
     # 8) Возвращаем результат
     return {
         "message": "Множественная регрессия: Цена ~ Год + Пробег + Объём двигателя. Анализ завершён.",
-        "FileAnalyzed": file_path,
+        "FileAnalyzed": filename,
         "CarBrand": car_brand,
         "CarModel": car_model,
         "CountRecords": len(df),
@@ -629,7 +629,7 @@ def analysis_multiple_dummies(filename: str):
             "Множественная линейная регрессия с категориальными переменными (dummy): "
             "Цена ~ Год + Пробег + ОбъёмДвигателя + Топливо + Трансмиссия. Анализ завершён."
         ),
-        "FileAnalyzed": file_path,
+        "FileAnalyzed": filename,
         "CarBrand": car_brand,
         "CarModel": car_model,
         "CountRecords": len(df),
