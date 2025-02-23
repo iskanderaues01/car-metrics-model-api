@@ -11,6 +11,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 
+from services.logistic_service import run_logistic_regression
 from services.paths_service import get_parsed_data_path, get_ml_results_path
 
 router = APIRouter()
@@ -639,5 +640,113 @@ def analysis_multiple_dummies(filename: str):
         "PlotPath": plot_path,
         "DummyFeatures": df_dummies.columns.tolist()
     }
+
+# Логистическая регрессия
+import os
+import json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import ConfusionMatrixDisplay
+
+from fastapi import APIRouter
+from services.paths_service import get_parsed_data_path, get_ml_results_path
+from services.logistic_service import run_logistic_regression
+@router.get("/analysis-logistic")
+def analysis_logistic(filename: str, price_threshold: float):
+    """
+    Пример запроса:
+      GET /analysis-logistic?filename=toyota_camry_2014_2015_3.json&price_threshold=5000000
+
+    1) Проверяем наличие JSON-файла (filename) в parsed_data
+    2) Загружаем DataFrame
+    3) Запускаем логистическую регрессию (Price ~ Year + Mileage + EngineVolume + Fuel + Transmission),
+       где класс is_expensive определяется price_threshold.
+    4) Строим confusion matrix, сохраняем её в PNG (с подписями на русском).
+    5) Сохраняем результат (метрики + описание) в JSON (подписи тоже на русском).
+    6) Возвращаем пути к сохранённому PNG, JSON и итоги анализа.
+    """
+
+    # 1) Путь к файлу
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
+    if not os.path.exists(file_path):
+        return {"error": f"Файл не найден: {file_path}"}
+
+    # 2) Читаем JSON => DataFrame
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not data:
+        return {"error": "JSON-файл пуст или некорректен."}
+
+    df = pd.DataFrame(data)
+    if df.empty:
+        return {"error": "После загрузки из JSON нет данных."}
+
+    # 3) Запускаем логистическую регрессию
+    try:
+        results = run_logistic_regression(df, price_threshold)
+    except Exception as e:
+        return {"error": f"Ошибка при выполнении логистической регрессии: {str(e)}"}
+
+    # Достаём нужные метрики
+    accuracy = results["accuracy"]
+    cm_list = results["confusion_matrix"]  # это list, пригодный для JSON
+    cm = np.array(cm_list)                 # превращаем в np.array для ConfusionMatrixDisplay
+
+    # 4) Строим confusion matrix и сохраняем (русские подписи)
+    plt.figure(figsize=(5, 4))
+    disp = ConfusionMatrixDisplay(
+        confusion_matrix=cm,
+        display_labels=["Недорого (0)", "Дорого (1)"]  # русские метки классов
+    )
+    disp.plot(cmap=plt.cm.Blues, values_format='d')
+    plt.title(f"Матрица ошибок (Порог цены > {price_threshold})\nТочность (Accuracy): {accuracy:.2f}")
+    plt.xlabel("Предсказанный класс")
+    plt.ylabel("Истинный класс")
+
+    ml_dir = get_ml_results_path()
+    base_name, _ = os.path.splitext(filename)
+    cm_plot_name = f"{base_name}_analysis_logistic_cm.png"
+    cm_plot_path = os.path.join(ml_dir, cm_plot_name)
+    plt.savefig(cm_plot_path)
+    plt.close()
+
+    # 5) Формируем краткое пояснение (на русском)
+    explanation = (
+        f"Логистическая регрессия: задача «Дорого ли авто?» (Порог цены = {price_threshold}).\n"
+        "Если Price выше порога, класс 1 (Дорого), иначе 0 (Недорого).\n"
+        "Матрица ошибок (confusion matrix) показывает, сколько объектов верно/неверно отнесены к классам.\n"
+        "Точность (accuracy) указывает долю верных классификаций."
+    )
+
+    # Собираем словарь с итоговой информацией (русские ключи там, где уместно)
+    analysis_result = {
+        "message": "Логистическая регрессия успешно выполнена.",
+        "fileAnalyzed": file_path,
+        "priceThreshold": price_threshold,
+        "accuracy": accuracy,
+        "confusionMatrix": cm_list,
+        "coefficients": results["coefs"],
+        "intercept": results["intercept"],
+        "features": results["features"],
+        "explanation": explanation
+    }
+
+    # 6) Сохраняем результат анализа в JSON (тоже с русскими ключами)
+    json_filename = f"{base_name}_analysis_logistic.json"
+    analysis_path = os.path.join(ml_dir, json_filename)
+    with open(analysis_path, "w", encoding="utf-8") as f:
+        json.dump(analysis_result, f, ensure_ascii=False, indent=2)
+
+    # Возвращаем ответ
+    return {
+        "message": "Логистическая регрессия выполнена. PNG и JSON сохранены.",
+        "analysisResult": analysis_result,
+        "confusionMatrixPlotPath": cm_plot_path,
+        "savedResultPath": analysis_path
+    }
+
+
 
 
