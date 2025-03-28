@@ -13,7 +13,8 @@ from sklearn.metrics import mean_squared_error, r2_score
 
 from services.logistic_service import run_logistic_regression
 from services.paths_service import get_parsed_data_path, get_ml_results_path
-
+from services.paths_service import get_parsed_data_path, get_ml_results_path
+from services.future_price_service import train_price_model, predict_future_price
 router = APIRouter()
 
 @router.get("/analysis-linear_by_year")
@@ -747,6 +748,241 @@ def analysis_logistic(filename: str, price_threshold: float):
         "savedResultPath": analysis_path
     }
 
+# routes/price_forecast_routes.py
+@router.get("/analysis-future-price")
+def analysis_future_price(
+    filename: str,
+    future_year: str,
+    future_mileage: str,
+    future_engine_volume: str,
+    future_fuel: str,
+    future_transmission: str
+):
+    """
+    Пример запроса:
+      GET /analysis-future-price?filename=today_cars.json
+        &future_year=2020
+        &future_mileage=90000
+        &future_engine_volume=1.6
+        &future_fuel=бензин
+        &future_transmission=автомат
 
+    1) Загружаем DataFrame из JSON (список объявлений на сегодня).
+    2) Обучаем линейную регрессию (Price ~ Year + Mileage + EngineVolume + Fuel + Transmission).
+    3) Предсказываем цену для "будущего" авто (задаётся параметрами).
+    4) Сохраняем график (гистограмму) + JSON с результатами.
+    5) Возвращаем итоговый ответ.
+    """
+
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not data:
+        return {"error": "JSON file is empty or invalid."}
+
+    df = pd.DataFrame(data)
+    if df.empty:
+        return {"error": "No data after loading JSON."}
+
+    # Обучаем модель
+    try:
+        model, feature_names = train_price_model(df)
+    except Exception as e:
+        return {"error": f"Error training model: {str(e)}"}
+
+    # Собираем словарь характеристик для "будущего" авто
+    future_data = {
+        "Year": future_year,
+        "Mileage": future_mileage,
+        "EngineVolume": future_engine_volume,
+        "Fuel": future_fuel,
+        "Transmission": future_transmission
+    }
+
+    # Предсказываем цену
+    try:
+        predicted_price = predict_future_price(model, feature_names, future_data)
+    except Exception as e:
+        return {"error": f"Error predicting future price: {str(e)}"}
+
+    # Считаем среднюю и медиану
+    avg_price = df["Price"].mean()
+    median_price = df["Price"].median()
+
+    # Рисуем гистограмму по Price
+    plt.figure(figsize=(8,5))
+    df["Price"].plot(kind="hist", bins=20, alpha=0.6, label="Текущее распределение цен")
+
+    # Линия для predicted_price
+    plt.axvline(x=predicted_price, color="red", linestyle="--",
+                label=f"Прогнозируемая будущая цена: ~ {int(predicted_price)}")
+
+    # Линии для средней и медианы
+    plt.axvline(x=avg_price, color="green", linestyle=":",
+                label=f"Средняя цена: ~ {int(avg_price)}")
+    plt.axvline(x=median_price, color="blue", linestyle=":",
+                label=f"Медиана: ~ {int(median_price)}")
+
+    plt.title("Текущее распределение цен и примерная будущая оценка")
+    plt.xlabel("Цена")
+    plt.ylabel("Частота (сколько объявлений попадает в данный диапазон цен)")
+    plt.legend()
+
+    ml_dir = get_ml_results_path()
+    base_name, _ = os.path.splitext(filename)
+    plot_name = f"{base_name}_future_price.png"
+    plot_path = os.path.join(ml_dir, plot_name)
+    plt.savefig(plot_path)
+    plt.close()
+
+    # Формируем более подробное пояснение
+    explanation = (
+        "Здесь мы рассматриваем объявления, имеющиеся на сегодня, и обучаем модель линейной регрессии, "
+        "которая оценивает цену (Price) на основе параметров Year, Mileage, EngineVolume, Fuel и Transmission. "
+        "Затем мы рассчитываем примерную стоимость для будущего авто, характеристики которого указаны в параметрах запроса.\n"
+        "Гистограмма на графике показывает, как распределяются текущие цены (ось X — цена, ось Y — частота, т.е. "
+        "сколько объявлений попало в тот или иной ценовой диапазон). Красной линией отмечена прогнозируемая цена "
+        "для указанного будущего авто, зелёной — средняя цена по выборке, синей — медианная."
+    )
+
+    analysis_result = {
+        "message": "Future price analysis done.",
+        "fileAnalyzed": file_path,
+        "futureData": future_data,
+        "predictedPrice": predicted_price,
+        "averagePrice": float(avg_price),
+        "medianPrice": float(median_price),
+        "explanation": explanation
+    }
+
+    # Сохраняем результат в JSON
+    json_filename = f"{base_name}_future_price.json"
+    analysis_path = os.path.join(ml_dir, json_filename)
+    with open(analysis_path, "w", encoding="utf-8") as f:
+        json.dump(analysis_result, f, ensure_ascii=False, indent=2)
+
+    return {
+        "message": "Future price predicted. Graph and JSON are saved.",
+        "analysisResult": analysis_result,
+        "priceDistributionPlot": plot_path,
+        "savedResultPath": analysis_path
+    }
+
+
+# routes/epoch_training_routes.py
+from services.paths_service import get_parsed_data_path, get_ml_results_path
+from services.epoch_training_service import train_sgd_regressor_with_epochs
+
+@router.get("/analysis-epochs")
+def analysis_epochs(
+    filename: str,
+    epochs: int = 5,
+    batch_size: int = 32
+):
+    """
+    Пример вызова:
+      GET /analysis-epochs?filename=car_data.json&epochs=10&batch_size=32
+
+    - Загружаем JSON (car_data.json), где есть Year, Mileage, EngineVolume, Price
+    - Очищаем, приводим к float
+    - Вызываем train_sgd_regressor_with_epochs (метод partial_fit на каждую эпоху)
+    - Получаем epoch_losses, final_mse, final_r2
+    - Рисуем график (epoch vs. loss)
+    - Сохраняем PNG и JSON
+    - Возвращаем результат
+    """
+
+    parsed_dir = get_parsed_data_path()
+    file_path = os.path.join(parsed_dir, filename)
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not data:
+        return {"error": "JSON file empty or invalid."}
+
+    df = pd.DataFrame(data)
+    if df.empty:
+        return {"error": "No data after loading JSON."}
+
+    # Предположим, что есть Year, Mileage, EngineVolume, Price
+    for col in ["Price", "Year", "Mileage", "EngineVolume"]:
+        if col not in df.columns:
+            return {"error": f"Column {col} not found in data."}
+        df[col] = df[col].astype(str).replace(r"[^0-9.]+", "", regex=True)
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df.dropna(subset=["Price", "Year", "Mileage", "EngineVolume"], inplace=True)
+    df = df[df["Price"] > 0]
+    if df.empty:
+        return {"error": "No valid numeric data after cleaning."}
+
+    X = df[["Year","Mileage","EngineVolume"]]
+    y = df["Price"]
+
+    # Обучаем
+    try:
+        training_result = train_sgd_regressor_with_epochs(X, y, epochs=epochs, batch_size=batch_size)
+    except Exception as e:
+        return {"error": f"Error in epoch training: {str(e)}"}
+
+    epoch_losses = training_result["epoch_losses"]
+    final_mse = training_result["final_mse"]
+    final_r2 = training_result["final_r2"]
+
+    # Рисуем график epoch vs. loss
+    plt.figure(figsize=(6,4))
+    plt.plot(range(1, epochs+1), epoch_losses, marker="o")
+    plt.title("SGDRegressor: epoch vs. loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Mean Loss per epoch (train set)")
+    plt.grid(True)
+
+    ml_dir = get_ml_results_path()
+    base_name, _ = os.path.splitext(filename)
+    plot_name = f"{base_name}_epoch_training.png"
+    plot_path = os.path.join(ml_dir, plot_name)
+    plt.savefig(plot_path)
+    plt.close()
+
+    # Дополнительное описание
+    explanation = (
+        "Обучение линейной регрессии методом стохастического градиентного спуска "
+        f"в течение {epochs} эпох, с размером батча = {batch_size}.\n"
+        "Loss в каждой эпохе усредняется по батчам.\n"
+        f"По окончании обучения модель оценена на всей выборке:\n"
+        f"MSE (mean squared error) = {final_mse:.2f}\n"
+        f"R^2 (коэффициент детерминации) = {final_r2:.3f}\n"
+        "Чем выше R^2, тем лучше модель объясняет дисперсию цены. MSE показывает "
+        "среднеквадратичную ошибку, чем меньше, тем лучше."
+    )
+
+    analysis_result = {
+        "message": "Epoch-based training done.",
+        "fileAnalyzed": file_path,
+        "epochs": epochs,
+        "batchSize": batch_size,
+        "epochLosses": epoch_losses,
+        "finalMSE": final_mse,
+        "finalR2": final_r2,
+        "explanation": explanation
+    }
+
+    json_filename = f"{base_name}_epoch_training.json"
+    analysis_path = os.path.join(ml_dir, json_filename)
+    with open(analysis_path, "w", encoding="utf-8") as f:
+        json.dump(analysis_result, f, ensure_ascii=False, indent=2)
+
+    return {
+        "message": "SGDRegressor training with epochs completed, PNG and JSON saved.",
+        "analysisResult": analysis_result,
+        "epochTrainingPlot": plot_path,
+        "savedResultPath": analysis_path
+    }
 
 
