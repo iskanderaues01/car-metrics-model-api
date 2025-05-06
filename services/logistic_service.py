@@ -1,10 +1,12 @@
 # services/logistic_service.py
-
+import os
+import json
 import pandas as pd
 import numpy as np
+from typing import Dict
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix
-from typing import Dict
+from sklearn.dummy import DummyClassifier
 
 def run_logistic_regression(
     df: pd.DataFrame, price_threshold: float
@@ -19,47 +21,30 @@ def run_logistic_regression(
     Возвращает словарь с метриками (accuracy, confusion_matrix и т.д.).
     """
 
-    # 0) Функция, убирающая все символы, кроме цифр и точки,
-    #    чтобы можно было корректно парсить '4.6' или '230 000' => '230000'
-    #    а '4.6' => '4.6'
+    # 0. Убираем всё, кроме цифр и точки
     def clean_numeric(val: str) -> str:
-        # Оставляем только цифры и точку
         import re
-        cleaned = re.sub(r"[^0-9.]+", "", val)
-        return cleaned
+        return re.sub(r"[^0-9.]+", "", str(val))
 
-    # Приведём все нужные колонки к float
+    for col in ["Price", "Year", "Mileage", "EngineVolume"]:
+        df[col] = pd.to_numeric(
+            df[col].astype(str).apply(clean_numeric),
+            errors="coerce"
+        )
 
-    # --- Price ---
-    df["Price"] = df["Price"].astype(str).apply(clean_numeric)
-    df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
-    # --- Year ---
-    df["Year"] = df["Year"].astype(str).apply(clean_numeric)
-    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
-    # --- Mileage ---
-    df["Mileage"] = df["Mileage"].astype(str).apply(clean_numeric)
-    df["Mileage"] = pd.to_numeric(df["Mileage"], errors="coerce")
-    # --- EngineVolume ---
-    df["EngineVolume"] = df["EngineVolume"].astype(str).apply(clean_numeric)
-    df["EngineVolume"] = pd.to_numeric(df["EngineVolume"], errors="coerce")
-
-    # Убираем строки, где Price не получилось сконвертировать
     df.dropna(subset=["Price"], inplace=True)
 
-    # 1) Создаём целевой признак is_expensive (0 или 1)
+    # 1. Обрезаем порог в рамки [min_price, max_price]
+    min_price, max_price = df["Price"].min(), df["Price"].max()
+    price_threshold = max(min_price, min(price_threshold, max_price))
+
+    # 2. Формируем целевой признак
     df["is_expensive"] = (df["Price"] > price_threshold).astype(int)
 
-    # 2) Убираем строки, где нет нужных данных
-    df.dropna(subset=["Price", "Year", "Mileage", "EngineVolume", "Fuel", "Transmission"], inplace=True)
+    # 3. Убираем строки с пропусками в ключевых колонках
+    df.dropna(subset=["Year", "Mileage", "EngineVolume", "Fuel", "Transmission"], inplace=True)
 
-    print("Price threshold:", price_threshold)
-    print("Количество записей:", len(df))
-    print("Min price:", df["Price"].min())
-    print("Max price:", df["Price"].max())
-    print("Value counts for is_expensive:")
-    print(df["is_expensive"].value_counts())
-
-    # Сравниваем с int/float
+    # 4. Фильтрация по годам/пробегу/объёму
     df = df[
         (df["Year"] > 1900) &
         (df["Mileage"] > 0) &
@@ -68,37 +53,39 @@ def run_logistic_regression(
     if df.empty:
         raise ValueError("После фильтрации не осталось записей для обучения логистической регрессии.")
 
-    # 3) Формируем X (признаки) и y (целевой признак)
+    # 5. Собираем X и y
     numeric_cols = ["Year", "Mileage", "EngineVolume"]
     cat_cols = ["Fuel", "Transmission"]
-
-    # Создаем dummy для категориальных
     df_dummies = pd.get_dummies(df[cat_cols], drop_first=True)
-
     X = pd.concat([df[numeric_cols], df_dummies], axis=1)
     y = df["is_expensive"]
 
-    if X.empty or len(X) < 2:
-        raise ValueError("Слишком мало данных для обучения логистической регрессии.")
+    # 6. Выбираем модель: Dummy, если только один класс или мало данных
+    is_dummy = (len(y.unique()) < 2) or (len(X) < 2)
+    if is_dummy:
+        model = DummyClassifier(strategy="most_frequent")
+    else:
+        model = LogisticRegression(max_iter=1000)
 
-    # 4) Обучаем LogisticRegression
-    model = LogisticRegression(max_iter=1000)
     model.fit(X, y)
-
-    # Предсказание на тех же данных (для демонстрации)
     y_pred = model.predict(X)
 
-    # 5) Метрики
+    # 7. Считаем метрики
     accuracy = accuracy_score(y, y_pred)
     cm = confusion_matrix(y, y_pred)
 
-    # Результат
-    results = {
+    # 8. Формируем коэффициенты
+    if is_dummy:
+        coefs = [[0.0] * X.shape[1]]
+        intercept = [0.0]
+    else:
+        coefs = model.coef_.tolist()
+        intercept = model.intercept_.tolist()
+
+    return {
         "accuracy": accuracy,
         "confusion_matrix": cm.tolist(),
-        "coefs": model.coef_.tolist(),
-        "intercept": model.intercept_.tolist(),
+        "coefs": coefs,
+        "intercept": intercept,
         "features": X.columns.tolist(),
     }
-
-    return results
